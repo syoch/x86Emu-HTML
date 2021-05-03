@@ -1,0 +1,109 @@
+
+Short:0x70 0xCB       JO    rel8     OF=1 
+Short:0x71 0xCB       JNO   rel8     OF=0 
+Short:0x72 0xCB       JC    rel8     CF=1 
+Short:0x73 0xCB       JNB   rel8     CF=0 
+Short:0x74 0xCB       JE    rel8     ZF=1 
+Short:0x75 0xCB       JNE   rel8     ZF=0 
+Short:0x76 0xCB       JBE   rel8     CF=1 or ZF=1 
+Short:0x77 0xCB       JA    rel8     CF=0 and ZF=0 
+Short:0x78 0xCB       JS    rel8     SF=1 
+Short:0x79 0xCB       JNS   rel8     SF=0 
+Short:0x7A 0xCB       JP    rel8     PF=1 
+Short:0x7B 0xCB       JNP   rel8     PF=0 
+Short:0x7C 0xCB       JL    rel8     SF< > OF 
+Short:0x7D 0xCB       JGE   rel8     SF=OF 
+Short:0x7E 0xCB       JLE   rel8     ZF=1 or SF< > OF 
+Short:0x7F 0xCB       JG    rel8     ZF=0 and SF=OF 
+Short:0xE3 0xCB       JCXZ  rel8     CX=0x0000 
+
+Near :0x0F 0x80 cw/cd JO    rel16/32 OF=1 
+Near :0x0F 0x81 cw/cd JNO   rel16/32 OF=0 
+Near :0x0F 0x82 cw/cd JB    rel16/32 CF=1 
+Near :0x0F 0x83 cw/cd JAE   rel16/32 CF=0 
+Near :0x0F 0x84 cw/cd JE    rel16/32 ZF=1 
+Near :0x0F 0x85 cw/cd JNE   rel16/32 ZF=0 
+Near :0x0F 0x86 cw/cd JBE   rel16/32 CF=1 or ZF=1 
+Near :0x0F 0x87 cw/cd JA    rel16/32 CF=0 and ZF=0 
+Near :0x0F 0x88 cw/cd JS    rel16/32 SF=1 
+Near :0x0F 0x89 cw/cd JNS   rel16/32 SF=0 
+Near :0x0F 0x8A cw/cd JP    rel16/32 PF=1 
+Near :0x0F 0x8B cw/cd JNP   rel16/32 PF=0 
+Near :0x0F 0x8C cw/cd JL    rel16/32 SF< > OF 
+Near :0x0F 0x8D cw/cd JGE   rel16/32 SF=OF 
+Near :0x0F 0x8E cw/cd JLE   rel16/32 ZF=1 or SF< > OF 
+Near :0x0F 0x8F cw/cd JG    rel16/32 ZF=0 or SF=OF 
+
+
+0x8A /r
+mov r8,r/m32
+----------------------------------------------------------------
+0x8a
+8a 0b 00 000 111     mov    al,byte [bx]
+8a 0b 01 000 110 00  mov    al,byte [bp+0x0]
+8a 0b 00 000 100     mov    al,byte [si]
+8a 0b 00 000 101     mov    al,byte [di]
+
+dest=std  al,cl,dl,bl,ah,ch,dh,bh
+src =adr  ?, ?, ?, ?,si,di,bp,bx
+
+----------------------------------------------------------------
+Register Type
+std : al,cl,dl,bl,ah,ch,dh,bh
+adr :  ?, ?, ?, ?,si,di,bp,bx
+----------------------------------------------------------------
+
+ax,cx,dx,bx
+sp,bp,si,di
+ip,flags
+cs,ds,ss,es,fs,gs
+
+
+83
+Mod=11
+Reg=add, or,adc,sbb,and,sub,xor,cmp
+Mem= ax, cx, dx, bx, sp, bp ,si, di
+
+
+
+
+8Ah
+mov R, [M+imm]
+
+R<-[M]
+R,[M+imm]
+R=[M+imm]
+R=[M+imm]
+
+Mod Reg r/m
+Mod R   M  
+
+                mov R , M
+Md Reg R/m immu 
+00 000 111      mov al, byte[bx]
+00 001 111      mov cl, byte[bx]
+00 010 111      mov dl, byte[bx]
+00 011 111      mov bl, byte[bx]
+00 100 111      mov ah, byte[bx]
+00 101 111      mov ch, byte[bx]
+00 110 111      mov dh, byte[bx]
+00 111 111      mov bh, byte[bx]
+
+00 000 000      mov al, byte[bx+si]
+00 000 001      mov al, byte[bx+di]
+00 000 010      mov al, byte[bp+si]
+00 000 011      mov al, byte[bp+di]
+00 000 100      mov al, byte[si]
+00 000 101      mov al, byte[di]
+01 000 110 00   mov al, byte[bp+0x0]
+00 000 111      mov al, byte[bx]
+
+Mod=[0,R/m+byte,R/m+word,0]
+Reg=[al,cl,dl,bl,ah,cd,dh,bh]
+
+__|Mod=Reg|--
+ (Reg/[ax,cx,dx,bx,sp,bp,si,di])[R/m]
+--|R/m=6 and mod==0|--
+ word
+--|
+ [bx+si,bx+di,dp+si,bp+di,si,di,bp,bx][R/m]+Mod

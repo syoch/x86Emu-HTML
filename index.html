@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>x86 emulator</title>
+    <script src="jquery.min.js"></script>
+    <script src="jquery.binarytransport.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@300&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <canvas id="screen"></canvas>
+    <div id="info"></div>
+    <div id="register">
+        UpdateFreq<br>
+        <input type="range" id="regUpdateFreq" max=1.0 min=0.01 step=0.01>
+        <div id="registerView">
+        </div>
+        <script>
+            /*
+                Canvas
+            */
+            /** @type {HTMLCanvasElement} */
+            var canvas_e = document.getElementById("screen");
+            canvas_e.width = canvas_e.clientWidth * 2;
+            canvas_e.height = canvas_e.clientHeight * 2;
+            /** @type {CanvasRenderingContext2D} */
+            var canvas = canvas_e.getContext("2d");
+            canvas.font = "16px 'Fira Code'";
+            canvas.fillStyle = "black";
+            canvas.fillRect(0, 0, canvas_e.width, canvas_e.height);
+            canvas.fillStyle = "white";
+
+            var display = {
+                data: {
+                    width: canvas_e.clientWidth,
+                    height: canvas_e.clientHeight,
+                    canvas: canvas_e,
+                    ctx: canvas,
+                },
+                text: {
+                    width: canvas_e.clientWidth / 16,
+                    height: canvas_e.clientHeight / 8,
+                    x: 0,
+                    y: 0,
+                    buffer: [] // buffer[y][x]
+                },
+                draw_char: function (ch, y, x) {
+                    if (this.text.buffer[x] == undefined) {
+                        this.text.buffer[x] = []
+                    }
+                    this.text.buffer[x][y] = ch;
+                    this.data.ctx.fillText(ch, x * 9, y * 16 + 12);
+                },
+                draw_str: function (str, y, x) {
+                    if (this.text.buffer[x] == undefined) {
+                        this.text.buffer[x] = []
+                    }
+                    for (let i = 0; i < str.length; i++) {
+                        const element = str[i];
+                        this.text.buffer[x][i] = element;
+                    }
+
+                    this.data.ctx.fillText(str, x * 9, y * 16 + 12);
+                }
+
+            };
+        </script>
+        <script>
+            /*
+                Main
+            */
+            class calc_type {
+                static add = 0b000;
+                static or = 0b001;
+                static adc = 0b010;
+                static sbb = 0b011;
+                static and = 0b100;
+                static sub = 0b101;
+                static xor = 0b110;
+                static cmp = 0b111;
+            }
+            var log = {
+                elems: {
+                    info: document.getElementById("info")
+                },
+                info: function (msg) {
+                    this.elems.info.innerHTML += msg + "<br>";
+                }
+            }
+            class Emu {
+                static F_CF = 1 << 0;
+                static F_PF = 1 << 2;
+                static F_AF = 1 << 4;
+                static F_ZF = 1 << 6;
+                static F_SF = 1 << 7;
+                static F_TF = 1 << 8;
+                static F_IF = 1 << 9;
+                static F_DF = 1 << 10;
+                static F_OF = 1 << 11;
+                static F_IOPLL = 1 << 12;
+                static F_IOPLH = 1 << 13;
+                static F_NT = 1 << 14;
+                static F_RF = 1 << 16;
+                static F_VM = 1 << 17;
+                static F_AC = 1 << 18;
+                static F_VIF = 1 << 19;
+                static F_VIP = 1 << 20;
+                static F_ID = 1 << 21;
+                static F_CF_I = 0;
+                static F_PF_I = 2;
+                static F_AF_I = 4;
+                static F_ZF_I = 6;
+                static F_SF_I = 7;
+                static F_TF_I = 8;
+                static F_IF_I = 9;
+                static F_DF_I = 10;
+                static F_OF_I = 11;
+                static F_IOPLL_I = 12;
+                static F_IOPLH_I = 13;
+                static F_NT_I = 14;
+                static F_RF_I = 16;
+                static F_VM_I = 17;
+                static F_AC_I = 18;
+                static F_VIF_I = 19;
+                static F_VIP_I = 20;
+                static F_ID_I = 21;
+                constructor(src) {
+                    this.ch = 0;
+                    this.pages = {
+                        0x00: BigInt(0)
+                    };
+                    this.bit = 16;
+                    this.regMax = 0xffff;
+                    this.regs = [
+                        /* 0*/{ name: "ax", value: 0 },
+                        /* 1*/{ name: "cx", value: 0 },
+                        /* 2*/{ name: "dx", value: 0 },
+                        /* 3*/{ name: "bx", value: 0 },
+                        /* 4*/{ name: "sp", value: 0xf000 },
+                        /* 5*/{ name: "bp", value: 0xf000 },
+                        /* 6*/{ name: "si", value: 0 },
+                        /* 7*/{ name: "di", value: 0 },
+                        /* 8*/{ name: "ip", value: 0 },
+                        /* 9*/{ name: "eflags", value: 0b00000000001000010000001000000010 },
+                        /*10*/{ name: "cs", value: 0x7C0 },
+                        /*11*/{ name: "ds", value: 0 },
+                        /*12*/{ name: "ss", value: 0x100 },
+                        /*13*/{ name: "es", value: 0 },
+                        /*14*/{ name: "fs", value: 0 },
+                        /*15*/{ name: "gs", value: 0 },
+                    ];
+                    this.modrm = {
+                        byte: 0x00,
+                        ishigh: 0,
+                        //----------
+                        mod: 0b00,
+                        r: 0b000,
+                        m: 0b000,
+                        //----------
+                        type: calc_type.add,
+                        reg: 0b000
+                    };
+                    //Copy src(512b) to 0x7c00 (cs*0x10)
+                    //dest = 0x00007c00 ~ 0x00007e00 chunk( 0~ 0)
+                    for (let i = 0x7c00; i < 0x7e00; i++) {
+                        this.pages[0x00] |= BigInt(src[i - 0x7c00]) << (8n * BigInt(i));
+                    }
+                }
+                mem_read_1b(addr) {
+
+                    return Number(
+                        (
+                            this.pages[addr >> (8 * 3)]
+                            >> BigInt(
+                                8 * (addr & 0x00ffffff)
+                            )
+                        ) & 0xffn
+                    );
+                }
+                mem_write_1b(addr, value) {
+                    this.pages[addr >> (8 * 3)] |= BigInt(value) << (8n * BigInt(addr & 0x00ffffff));
+                }
+                mem_write_word(addr, value) {
+                    this.mem_write_1b(addr + 0, (value >> 0x00) & 0xff);
+                    this.mem_write_1b(addr + 1, (value >> 0x08) & 0xff);
+                    this.mem_write_1b(addr + 2, (value >> 0x10) & 0xff);
+                    this.mem_write_1b(addr + 3, (value >> 0x18) & 0xff);
+                }
+                mem_read_word(addr) {
+                    return this.mem_read_1b(addr + 0) << 0x0 |
+                        this.mem_read_1b(addr + 1) << 0x08 |
+                        this.mem_read_1b(addr + 2) << 0x10 |
+                        this.mem_read_1b(addr + 3) << 0x18;
+                }
+                next() {
+                    var ch = this.mem_read_1b((this.regs[10].value << 4) + this.regs[8].value);
+                    this.regs[8].value += 1;
+                    if (ch == undefined) {
+                        this.ch = -1;
+                        return -1;
+                    } else {
+                        this.ch = ch;
+                        return ch;
+                    }
+                }
+                reads(bytes) {
+                    var ret = 0;
+                    for (let i = 0; i < bytes; i++) {
+                        ret |= this.next() << (i * 8);
+                    }
+                    return ret;
+                }
+                half() {
+                    return this.reads(this.bit / 16)
+                }
+                word() {
+                    return this.reads(this.bit / 8)
+                }
+                readModRM_RM() {
+                    let opcode = this.ch;
+                    let modrm = this.next();
+                    this.modrm.r_chunk = 0;
+                    this.modrm.byte = modrm;
+                    this.modrm.mod = modrm >> 6;
+
+                    //>>> Process RM
+                    if (opcode == 0x8A) // Std Adr
+                    {
+                        /*
+                        Mod=[0,R/m+byte,R/m+word,0]
+                        Reg=[al,cl,dl,bl,ah,cd,dh,bh]
+
+                        __|Mod=Reg|--
+                         (Reg/[ax,cx,dx,bx,sp,bp,si,di])[R/m]
+                        --|R/m=6 and mod==0|--
+                         word
+                        --|
+                         [bx+si,bx+di,dp+si,bp+di,si,di,bp,bx][R/m]+Mod 
+                        */
+                    } else {
+                        log.info("Unknown Modrm Mode " + opcode.toString(16));
+                        throw "";
+                    }
+                }
+                readModRM_CTR() {
+                    let modrm = this.next();
+                    this.modrm.type = [
+                        calc_type.add,
+                        calc_type.or,
+                        calc_type.adc,
+                        calc_type.sbb,
+                        calc_type.and,
+                        calc_type.sub,
+                        calc_type.xor,
+                        calc_type.cmp
+                    ][modrm >> 3 & 7];
+                    this.modrm.reg = this.regs[modrm & 7];
+                }
+                updateFlags_int_noCF(value) {
+                    this.regs[9].value &= ~Emu.F_SF;
+                    this.regs[9].value &= ~Emu.F_OF;
+                    this.regs[9].value &= ~Emu.F_ZF;
+                    if (value == 0) {
+                        this.regs[9].value |= Emu.F_ZF;
+                    }
+                    if (value < 0) {
+                        this.regs[9].value |= Emu.F_SF;
+                    }
+                    if (value > this.regMax) {
+                        this.regs[9].value |= Emu.F_OF;
+                    }
+                }
+                updateFlags_int(value) {
+                    this.regs[9].value &= ~Emu.F_SF;
+                    this.regs[9].value &= ~Emu.F_CF;
+                    this.regs[9].value &= ~Emu.F_OF;
+                    this.regs[9].value &= ~Emu.F_ZF;
+                    if (value == 0) {
+                        this.regs[9].value |= Emu.F_ZF;
+                    }
+                    if (value < 0) {
+                        this.regs[9].value |= Emu.F_CF;
+                        this.regs[9].value |= Emu.F_SF;
+                    }
+                    if (value > this.regMax) {
+                        this.regs[9].value |= Emu.F_CF;
+                        this.regs[9].value |= Emu.F_OF;
+                    }
+                }
+
+                reljump(size, offset) {
+                    if (offset >> (size * 8 - 1) == 1) {
+                        this.regs[8].value -= ~(offset - 1) & 0xff;
+                    } else {
+                        this.regs[8].value += offset;
+                    }
+                }
+            }
+            function mne_none(emu) {
+                log.info("Unknown " + emu.ch.toString(16));
+                throw "???";
+            }
+            function mne_jmp_half(emu) {
+                emu.reljump(emu.bit / 16, emu.half());
+
+            }
+            function mne_off_interrrupt(emu) {
+                //log.info("Disable CPUint");
+                emu.regs[9].value &= (1 << Emu.F_VIF);
+            }
+            function mne_mov_word(emu) {
+                emu.regs[emu.ch - 0xb8].value = emu.word();
+            }
+            function mne_cal_word(emu) {
+                let offs = emu.word();
+                emu.regs[4].value -= emu.bit / 8;
+                emu.mem_write_word(
+                    (emu.regs[12].value << 4) + emu.regs[4].value,
+                    emu.regs[8].value
+                );
+                emu.reljump(emu.bit / 8, offs);
+            }
+            function mne_ret(emu) {
+                let adr = emu.mem_read_word(
+                    (emu.regs[12].value << 4) + emu.regs[4].value
+                );
+                emu.regs[8].value = adr;
+
+                emu.regs[4].value += emu.bit / 8;
+            }
+            function mne_push_reg(emu) {
+                //push =sub(sp,a1s) *sp=a1d
+                emu.regs[4].value -= emu.bit;
+                emu.mem_write_word(emu.regs[4].value, emu.regs[emu.ch - 0x50].value);
+            }
+            function mne_pop_reg(emu) {
+                //pop  =a1d=*sp add(sp,a1s)
+                emu.regs[emu.ch - 0x58].value = emu.mem_read_word(emu.regs[4].value);
+                emu.regs[4].value += emu.bit;
+            }
+            function mne_mov_M2R_Byte(emu) {
+                emu.readModRM_RM();
+
+                if (emu.modrm.ishigh == 1) {
+                    emu.modrm.r.value &= ~0xff00;
+                    emu.modrm.r.value |= emu.mem_read_1b(emu.modrm.m) << 8;
+                }
+                if (emu.modrm.ishigh == 0) {
+                    emu.modrm.r.value &= ~0xff;
+                    emu.modrm.r.value |= emu.mem_read_1b(emu.modrm.m);
+                }
+            }
+            function mne_inc_reg(emu) {
+                emu.regs[emu.ch - 0x40].value++;
+
+            }
+            function mne_dec_reg(emu) {
+                emu.regs[emu.ch - 0x48].value--;
+            }
+            function mne_cmp_ai_8bit(emu) {
+                let a = (emu.regs[0].value & 0xff)
+                let b = emu.next();
+
+                emu.updateFlags_int(a - b);
+            }
+            function mne_jmp_cond(emu) {
+                let type = emu.ch - 0x70;
+                let offs = emu.next();
+                let fl = emu.regs[9].value;
+                let of = fl >> Emu.F_OF_I & 1;
+                let zf = fl >> Emu.F_ZF_I & 1;
+                let cf = fl >> Emu.F_CF_I & 1;
+                let sf = fl >> Emu.F_SF_I & 1;
+                let pf = fl >> Emu.F_PF_I & 1;
+                if (
+                    (type == 0x0 && of == 1) ||
+                    (type == 0x1 && of == 0) ||
+                    (type == 0x2 && cf == 1) ||
+                    (type == 0x3 && cf == 0) ||
+                    (type == 0x4 && zf == 1) ||
+                    (type == 0x5 && zf == 0) ||
+                    (type == 0x6 && cf == 1 || zf == 1) ||
+                    (type == 0x7 && cf == 0 && zf == 0) ||
+                    (type == 0x8 && sf != 0) ||
+                    (type == 0x9 && sf == 0) ||
+                    (type == 0xa && pf != 0) ||
+                    (type == 0xb && pf == 0) ||
+                    (type == 0xc && sf != of) ||
+                    (type == 0xd && sf == of) ||
+                    (type == 0xe && zf != 0 || sf != of) ||
+                    (type == 0xf && zf == 0 && sf == of)
+                ) {
+                    log.info("jump " + offs.toString(16))
+                    emu.reljump(8, offs)
+                }
+            }
+            function mne_mov_imm8(emu) {
+                let reg = emu.ch - 0xb0;
+                let value = emu.next();
+                let ishigh = (reg) >> 2;
+                let regno = (reg) & 3;
+                if (ishigh == 1) {
+                    emu.regs[regno].value &= ~0xff00;
+                    emu.regs[regno].value |= value << 8;
+                }
+                if (ishigh == 0) {
+                    emu.regs[regno].value &= ~0xff;
+                    emu.regs[regno].value |= value;
+                }
+            }
+            function mne_int_imm8(emu) {
+                let inttype = emu.next();
+                let ah = emu.regs[0].value >> 8;
+                function type_10h() {
+                    if (ah == 0x0e) {
+                        var ch = emu.regs[0].value & 0xff;
+                        if (ch == 0x0a) {
+                            display.text.y += 1;
+                        } else if (ch == 0x08) {
+                            display.text.x += 1;
+                        } if (ch == 0x0d) {
+                            display.text.x = 0;
+                        } else {
+                            display.draw_char(String.fromCharCode(ch), display.text.y, display.text.x);
+                            display.text.x++;
+                            if ((display.text.x + 1) * 9 >= display.data.width) {
+                                display.text.x = 0;
+                                display.text.y++;
+                            }
+                        }
+                    } else {
+                        log.info("Unknown int mode");
+                        log.info("type=" + inttype.toString(16) + ",ah=" + ah.toString(16))
+                        throw "???";
+                    }
+                }
+                if (inttype == 0x10) {
+                    type_10h();
+                } else {
+                    log.info("Unknown int " + inttype.toString(16));
+                    throw "???";
+                }
+            }
+            function mne_clc_imm8(emu) {
+                emu.readModRM_CTR();
+                let imm = emu.next()
+                switch (emu.modrm.type) {
+                    case calc_type.add:
+                        emu.modrm.reg.value += imm;
+                        break;
+                    case calc_type.or:
+                        emu.modrm.reg.value |= imm;
+                        break;
+                    case calc_type.adc:
+                        emu.modrm.reg.value += imm + emu >> Emu.F_CF & 1;
+                        break;
+                    case calc_type.sbb:
+                        emu.modrm.reg.value -= imm + emu >> Emu.F_CF & 1;
+                        break;
+                    case calc_type.and:
+                        emu.modrm.reg.value &= imm;
+                        break;
+                    case calc_type.sub:
+                        emu.modrm.reg.value -= imm;
+                        break;
+                    case calc_type.xor:
+                        emu.modrm.reg.value ^= imm;
+                        break;
+                    case calc_type.cmp:
+
+                        break;
+                }
+                emu.updateFlags_int(emu.modrm.reg.value);
+            }
+            function run(_src) {
+                var emu = new Emu(_src);
+                var funcs = Array(0x100);
+                funcs.fill(mne_none);
+                var info = {
+                    0x3c: "cmp",
+                    0x40: "inc", 0x41: "inc", 0x42: "inc", 0x43: "inc", 0x44: "inc", 0x45: "inc", 0x46: "inc", 0x47: "inc",
+                    0x48: "dec", 0x49: "dec", 0x4a: "dec", 0x4b: "dec", 0x4c: "dec", 0x4d: "dec", 0x4e: "dec", 0x4f: "dec",
+                    0x50: "push", 0x51: "push", 0x52: "push", 0x53: "push", 0x54: "push", 0x55: "push", 0x56: "push", 0x57: "push",
+                    0x58: "pop", 0x59: "pop", 0x5a: "pop", 0x5b: "pop", 0x5c: "pop", 0x5d: "pop", 0x5e: "pop", 0x5f: "pop",
+                    0x70: "jcc", 0x71: "jcc", 0x72: "jcc", 0x73: "jcc", 0x74: "jcc", 0x75: "jcc", 0x76: "jcc", 0x77: "jcc", 0x78: "jcc", 0x79: "jcc", 0x7A: "jcc", 0x7B: "jcc", 0x7C: "jcc", 0x7D: "jcc", 0x7E: "jcc", 0x7F: "j",
+                    0x8a: "mov",
+                    0xeb: "jmp",
+                    0xfa: "off",
+                    0xb0: "mov", 0xb1: "mov", 0xb2: "mov", 0xb3: "mov", 0xb4: "mov", 0xb5: "mov", 0xb6: "mov", 0xb7: "mov", 0xb8: "mov", 0xb9: "mov", 0xba: "mov", 0xbb: "mov", 0xbc: "mov", 0xbd: "mov", 0xbe: "mov", 0xbf: "mov",
+                    0xe8: "cal",
+                    0xc3: "ret", 0xcd: "int",
+                }
+                funcs[0x3c] = mne_cmp_ai_8bit;
+                funcs[0x40] = mne_inc_reg;
+                funcs[0x41] = mne_inc_reg;
+                funcs[0x42] = mne_inc_reg;
+                funcs[0x43] = mne_inc_reg;
+                funcs[0x44] = mne_inc_reg;
+                funcs[0x45] = mne_inc_reg;
+                funcs[0x46] = mne_inc_reg;
+                funcs[0x47] = mne_inc_reg;
+                funcs[0x48] = mne_dec_reg;
+                funcs[0x49] = mne_dec_reg;
+                funcs[0x4a] = mne_dec_reg;
+                funcs[0x4b] = mne_dec_reg;
+                funcs[0x4c] = mne_dec_reg;
+                funcs[0x4d] = mne_dec_reg;
+                funcs[0x4e] = mne_dec_reg;
+                funcs[0x4f] = mne_dec_reg;
+                funcs[0x50] = mne_push_reg;
+                funcs[0x51] = mne_push_reg;
+                funcs[0x52] = mne_push_reg;
+                funcs[0x53] = mne_push_reg;
+                funcs[0x54] = mne_push_reg;
+                funcs[0x55] = mne_push_reg;
+                funcs[0x56] = mne_push_reg;
+                funcs[0x57] = mne_push_reg;
+                funcs[0x58] = mne_pop_reg;
+                funcs[0x59] = mne_pop_reg;
+                funcs[0x5a] = mne_pop_reg;
+                funcs[0x5b] = mne_pop_reg;
+                funcs[0x5c] = mne_pop_reg;
+                funcs[0x5d] = mne_pop_reg;
+                funcs[0x5e] = mne_pop_reg;
+                funcs[0x5f] = mne_pop_reg;
+                funcs[0x70] = mne_jmp_cond;
+                funcs[0x71] = mne_jmp_cond;
+                funcs[0x72] = mne_jmp_cond;
+                funcs[0x73] = mne_jmp_cond;
+                funcs[0x74] = mne_jmp_cond;
+                funcs[0x75] = mne_jmp_cond;
+                funcs[0x76] = mne_jmp_cond;
+                funcs[0x77] = mne_jmp_cond;
+                funcs[0x78] = mne_jmp_cond;
+                funcs[0x79] = mne_jmp_cond;
+                funcs[0x7A] = mne_jmp_cond;
+                funcs[0x7B] = mne_jmp_cond;
+                funcs[0x7C] = mne_jmp_cond;
+                funcs[0x7D] = mne_jmp_cond;
+                funcs[0x7E] = mne_jmp_cond;
+                funcs[0x7F] = mne_jmp_cond;
+                funcs[0x8a] = mne_mov_M2R_Byte;
+                funcs[0x83] = mne_clc_imm8;
+                funcs[0xeb] = mne_jmp_half;
+                funcs[0xfa] = mne_off_interrrupt;
+                funcs[0xb0] = mne_mov_imm8;
+                funcs[0xb1] = mne_mov_imm8;
+                funcs[0xb2] = mne_mov_imm8;
+                funcs[0xb3] = mne_mov_imm8;
+                funcs[0xb4] = mne_mov_imm8;
+                funcs[0xb5] = mne_mov_imm8;
+                funcs[0xb6] = mne_mov_imm8;
+                funcs[0xb7] = mne_mov_imm8;
+                funcs[0xb8] = mne_mov_word;
+                funcs[0xb9] = mne_mov_word;
+                funcs[0xba] = mne_mov_word;
+                funcs[0xbb] = mne_mov_word;
+                funcs[0xbc] = mne_mov_word;
+                funcs[0xbd] = mne_mov_word;
+                funcs[0xbe] = mne_mov_word;
+                funcs[0xbf] = mne_mov_word;
+                funcs[0xe8] = mne_cal_word;
+                funcs[0xc3] = mne_ret;
+                funcs[0xcd] = mne_int_imm8;
+
+                window.emu = emu;
+                let i = 0;
+                let timer = setInterval(() => {
+                    ch = emu.next();
+                    //log.info(zeroPadding(((emu.regs[10].value << 4) + emu.regs[8].value - 1).toString(16), 4) + ":" + ch.toString(16)+":"+info[ch]);
+                    try {
+                        funcs[ch](emu);
+                    } catch (ex) {
+                        log.info(ex);
+                        clearInterval(timer);
+                    }
+                    if (ch == -1 || i == 512) {
+                        clearInterval(timer);
+                    }
+                }, 1);
+                console.log("end");
+            }
+        </script>
+        <script>
+            var src;
+            $.ajax({ "url": "main", dataType: "binary", responseType: 'arraybuffer' })
+                .done((a) => {
+                    run(new Uint8Array(a));
+                })
+                .fail(() => {
+                    console.log("Failed to Download Os");
+                })
+        </script>
+        <script>
+            /*
+                DOM
+            */
+            function zeroPadding(NUM, LEN) {
+                return "0".repeat(LEN - NUM.length) + NUM;
+            }
+            let regUpdateFreq = 1;
+            $("#regUpdateFreq").on("input", (evt) => {
+                regUpdateFreq = evt.target.value * 1000;
+            });
+            setInterval(() => {
+                $("#registerView").html(
+                    `ax:${zeroPadding(emu.regs[0].value.toString(16), 8)}<br>` +
+                    `cx:${zeroPadding(emu.regs[1].value.toString(16), 8)}<br>` +
+                    `dx:${zeroPadding(emu.regs[2].value.toString(16), 8)}<br>` +
+                    `bx:${zeroPadding(emu.regs[3].value.toString(16), 8)}<br>` +
+                    `sp:${zeroPadding(emu.regs[4].value.toString(16), 8)}<br>` +
+                    `bp:${zeroPadding(emu.regs[5].value.toString(16), 8)}<br>` +
+                    `si:${zeroPadding(emu.regs[6].value.toString(16), 8)}<br>` +
+                    `di:${zeroPadding(emu.regs[7].value.toString(16), 8)}<br>` +
+                    `ip:${zeroPadding(emu.regs[8].value.toString(16), 8)}<br>` +
+                    `fl:${zeroPadding(emu.regs[9].value.toString(16), 8)}<br>` +
+                    `cs:${zeroPadding(emu.regs[10].value.toString(16), 8)}<br>` +
+                    `ds:${zeroPadding(emu.regs[11].value.toString(16), 8)}<br>` +
+                    `ss:${zeroPadding(emu.regs[12].value.toString(16), 8)}<br>` +
+                    `es:${zeroPadding(emu.regs[13].value.toString(16), 8)}<br>` +
+                    `fs:${zeroPadding(emu.regs[14].value.toString(16), 8)}<br>` +
+                    `gs:${zeroPadding(emu.regs[15].value.toString(16), 8)}<br>` +
+                    `i :${zeroPadding(((emu.regs[10].value << 4) + emu.regs[8].value).toString(16), 8)}<br>` +
+                    `s :${zeroPadding(((emu.regs[12].value << 4) + emu.regs[4].value).toString(16), 8)}<br>` +
+                    ``
+                )
+            }, regUpdateFreq);
+        </script>
+        <style>
+            html,
+            body {
+                width: 100vw;
+                height: 100vh;
+            }
+
+            * {
+                font-family: 'Fira Code';
+                padding: 0px;
+                margin: 0px;
+            }
+
+            #info {
+                position: absolute;
+                top: 0%;
+                right: 0%;
+                font-size: smaller;
+                width: 20%;
+                height: 90%;
+                overflow: scroll;
+            }
+
+            #register {
+                position: absolute;
+                top: 0%;
+                left: 0%;
+                font-size: smaller;
+                width: 20%;
+                height: 90%;
+                overflow: scroll;
+            }
+
+            #screen {
+                position: absolute;
+                top: 0%;
+                left: 20%;
+                width: 60%;
+                height: 90%;
+            }
+        </style>
+</body>
+
+</html>
